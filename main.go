@@ -15,7 +15,7 @@ x 1. Static scene - Draw centered borders and fixed terrain just to get layout r
 x 2. Add ship - Draw ship at fixed position, allow up/down movement with bounds checking
 x 3. Scrolling terrain - Make terrain scroll left, generate simple flat terrain on right
 x 4. Random generation - Add randomness to terrain with constraints
-5. Collision detection - Check ship vs terrain, show game over
+x 5. Collision detection - Check ship vs terrain, show game over
 6. Game loop timing - Add proper frame timing
 7. Polish - Score, restart, difficulty, colors, instructions
 */
@@ -42,9 +42,11 @@ type GameState struct {
 	exit      bool
 	minWidth  int
 	minHeight int
+	rnd       *rand.Rand
 
 	// player
 	player position
+	alive  bool
 
 	// borders
 	topB    [MIN_WIDTH]int
@@ -103,6 +105,8 @@ func setup() *GameState {
 		minWidth:      MIN_WIDTH,
 		minHeight:     MIN_HEIGTH,
 		player:        position{10, MIN_HEIGTH / 2},
+		alive:         true,
+		rnd:           rand.New(rand.NewSource(0xDEADBEEF)),
 	}
 
 	// add borders
@@ -139,6 +143,10 @@ outer:
 			switch key {
 			case tcell.KeyESC:
 				g.exit = true
+			case tcell.KeyBackspace2:
+				if !g.alive {
+					restartGame(g)
+				}
 			case tcell.KeyUp:
 				g.player.y -= 1
 			case tcell.KeyDown:
@@ -151,6 +159,10 @@ outer:
 		default:
 			break outer
 		}
+	}
+
+	if !g.alive {
+		return
 	}
 
 	if g.player.y <= 0 {
@@ -166,14 +178,28 @@ outer:
 	}
 
 	// borders
-	updateAllBorders(&g.bottomB, &g.topB)
+	updateAllBorders(g.rnd, &g.bottomB, &g.topB)
+
+	if g.player.y <= g.topB[g.player.x] || g.player.y > g.bottomB[g.player.x] {
+		g.alive = false
+	}
 }
 
-func updateAllBorders(bB *[MIN_WIDTH]int, tB *[MIN_WIDTH]int) {
-	choice1 := rand.Float32()
+func restartGame(g *GameState) {
+	for i := range g.bottomB {
+		g.topB[i] = 2
+		g.bottomB[i] = MIN_HEIGTH - 2
+	}
+	g.rnd = rand.New(rand.NewSource(0xDEADBEEF))
+	g.player = position{10, MIN_HEIGTH / 2}
+	g.alive = true
+}
+
+func updateAllBorders(rnd *rand.Rand, bB *[MIN_WIDTH]int, tB *[MIN_WIDTH]int) {
+	choice1 := rnd.Float32()
 	direction1 := 0
 
-	choice2 := rand.Float32()
+	choice2 := rnd.Float32()
 	direction2 := 0
 
 	// check top border range
@@ -206,6 +232,8 @@ func updateBorder(b *[MIN_WIDTH]int, direction int) {
 		b[i] = b[i+1]
 	}
 
+	// direction 1 is up, 0 is flat, -1 is down
+	// terminal coordinates are inverted for y axis
 	switch direction {
 	case 0:
 		newBorder = b[MIN_WIDTH-2]
@@ -254,7 +282,15 @@ func draw(g *GameState) {
 	}
 
 	// info
-	drawText(g.s, (termWidth-35)/2, termHeight-1, g.borderStyle, "move with arrows. press esc to quit")
+	infoText := "move with arrows. press esc to quit"
+	if !g.alive {
+		infoText = "press backspace to restart. press esc to quit"
+	}
+	drawText(g.s, (termWidth-len(infoText))/2, termHeight-1, g.borderStyle, infoText)
+
+	if !g.alive {
+		drawText(g.s, playAreaX+int(rand.Int31n(MIN_WIDTH-4)), playAreaY+int(rand.Int31n(MIN_HEIGTH)), g.borderStyle, "DEAD")
+	}
 
 	g.s.Show()
 }
