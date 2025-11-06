@@ -9,17 +9,6 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
-/*
-steps for dev:
-x 1. Static scene - Draw centered borders and fixed terrain just to get layout right
-x 2. Add ship - Draw ship at fixed position, allow up/down movement with bounds checking
-x 3. Scrolling terrain - Make terrain scroll left, generate simple flat terrain on right
-x 4. Random generation - Add randomness to terrain with constraints
-x 5. Collision detection - Check ship vs terrain, show game over
-6. Game loop timing - Add proper frame timing
-7. Polish - Score, restart, difficulty, colors, instructions
-*/
-
 // ================================ CONSTS ==================================
 
 const MIN_HEIGTH = 25
@@ -30,6 +19,11 @@ const MIN_WIDTH = 60
 type position struct {
 	x int
 	y int
+}
+
+type treasure struct {
+	position
+	visible bool
 }
 
 type GameState struct {
@@ -43,6 +37,11 @@ type GameState struct {
 	minWidth  int
 	minHeight int
 	rnd       *rand.Rand
+	score     int
+	counter   int
+	delay     int
+	treasure  treasure
+	ticker    *time.Ticker
 
 	// player
 	player position
@@ -57,21 +56,25 @@ type GameState struct {
 
 func main() {
 	gameState := setup()
+	defer gameState.ticker.Stop()
 
 	// key events
 	inputCh := make(chan tcell.Key, 10)
 	go handleInput(gameState.s, inputCh)
 
-	// update frame based on ticker
-	ticker := time.NewTicker(66 * time.Millisecond)
-	defer ticker.Stop()
-
 	// game loop
 	for !gameState.exit {
-		<-ticker.C
+		<-gameState.ticker.C
 
 		update(gameState, inputCh)
 		draw(gameState)
+
+		// update speed
+		if gameState.delay > 24 &&
+			gameState.counter <= 0 {
+			gameState.delay -= 2
+			gameState.ticker.Reset(time.Duration(gameState.delay) * time.Millisecond)
+		}
 	}
 
 	gameState.s.Fini()
@@ -104,10 +107,8 @@ func setup() *GameState {
 		gameAreaStyle: gameAreaStyle,
 		minWidth:      MIN_WIDTH,
 		minHeight:     MIN_HEIGTH,
-		player:        position{10, MIN_HEIGTH / 2},
-		alive:         true,
-		rnd:           rand.New(rand.NewSource(0xDEADBEEF)),
 	}
+	restartGame(&gameState)
 
 	// add borders
 	for i := range gameState.bottomB {
@@ -132,6 +133,27 @@ func handleInput(s tcell.Screen, inputCh chan tcell.Key) {
 			s.Sync()
 		}
 	}
+}
+
+func restartGame(g *GameState) {
+	for i := range g.bottomB {
+		g.topB[i] = 2
+		g.bottomB[i] = MIN_HEIGTH - 2
+	}
+	g.rnd = rand.New(rand.NewSource(0xDEADBEEF))
+	g.player = position{10, MIN_HEIGTH / 2}
+	g.alive = true
+	g.score = 0
+	g.counter = 100
+	g.delay = 70
+	g.treasure.visible = false
+
+	// when first starting there is no ticker yet
+	if g.ticker != nil {
+		// stop ticker for when restarting game
+		g.ticker.Stop()
+	}
+	g.ticker = time.NewTicker(time.Duration(g.delay) * time.Millisecond)
 }
 
 func update(g *GameState, inputCh <-chan tcell.Key) {
@@ -177,25 +199,24 @@ outer:
 		g.player.x = g.minWidth - 1
 	}
 
-	// borders
-	updateAllBorders(g.rnd, &g.bottomB, &g.topB)
+	// borders and treasures
+	updateLand(g.rnd, &g.bottomB, &g.topB, &g.treasure, &g.counter)
 
+	// check if player crash into land
 	if g.player.y <= g.topB[g.player.x] || g.player.y > g.bottomB[g.player.x] {
 		g.alive = false
 	}
-}
 
-func restartGame(g *GameState) {
-	for i := range g.bottomB {
-		g.topB[i] = 2
-		g.bottomB[i] = MIN_HEIGTH - 2
+	// update game variables
+	g.score += 1
+	g.counter -= 1
+	if g.player == g.treasure.position {
+		g.treasure.visible = false
+		g.score += 500
 	}
-	g.rnd = rand.New(rand.NewSource(0xDEADBEEF))
-	g.player = position{10, MIN_HEIGTH / 2}
-	g.alive = true
 }
 
-func updateAllBorders(rnd *rand.Rand, bB *[MIN_WIDTH]int, tB *[MIN_WIDTH]int) {
+func updateLand(rnd *rand.Rand, bB *[MIN_WIDTH]int, tB *[MIN_WIDTH]int, treasure *treasure, counter *int) {
 	choice1 := rnd.Float32()
 	direction1 := 0
 
@@ -224,6 +245,21 @@ func updateAllBorders(rnd *rand.Rand, bB *[MIN_WIDTH]int, tB *[MIN_WIDTH]int) {
 
 	updateBorder(tB, direction1)
 	updateBorder(bB, direction2)
+
+	// spawn new treasure
+	if *counter <= 0 {
+		treasure.position.x = MIN_WIDTH - 1
+		treasure.position.y = tB[MIN_WIDTH-1] + 1 + int((choice1+choice2)/2*float32(bB[MIN_WIDTH-1]-tB[MIN_WIDTH-1]))
+		treasure.visible = true
+		*counter = 100
+	}
+
+	// update treasure
+	if treasure.position.x == 0 {
+		treasure.visible = false
+	} else {
+		treasure.position.x--
+	}
 }
 
 func updateBorder(b *[MIN_WIDTH]int, direction int) {
@@ -275,6 +311,10 @@ func draw(g *GameState) {
 	// player
 	g.s.SetContent(playerX, playerY, '>', nil, g.gameAreaStyle.Foreground(tcell.ColorPink))
 
+	if g.treasure.visible {
+		g.s.SetContent(playAreaX+g.treasure.x, playAreaY+g.treasure.y, '@', nil, g.gameAreaStyle.Foreground(tcell.ColorGold))
+	}
+
 	// terminal size check
 	if termWidth < g.minWidth || termHeight < g.minHeight {
 		text := fmt.Sprintf("Terminal too small! Need at least 60x30, now is %dx%d", termWidth, termHeight)
@@ -287,6 +327,9 @@ func draw(g *GameState) {
 		infoText = "press backspace to restart. press esc to quit"
 	}
 	drawText(g.s, (termWidth-len(infoText))/2, termHeight-1, g.borderStyle, infoText)
+
+	scoreText := fmt.Sprintf("score: %d", g.score)
+	drawText(g.s, (termWidth-len(scoreText))/2, 0, g.borderStyle, scoreText)
 
 	if !g.alive {
 		drawText(g.s, playAreaX+int(rand.Int31n(MIN_WIDTH-4)), playAreaY+int(rand.Int31n(MIN_HEIGTH)), g.borderStyle, "DEAD")
